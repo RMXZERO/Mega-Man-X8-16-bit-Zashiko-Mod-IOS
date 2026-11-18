@@ -104,6 +104,7 @@ script_encryption_key=""
 [preset.{n}.options]
 
 application/app_store_team_id="{team}"
+application/identifier="{bundle}"
 application/bundle_identifier="{bundle}"
 application/short_version="1.0"
 application/version="1.0.0"
