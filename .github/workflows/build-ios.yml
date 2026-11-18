@@ -43,14 +43,16 @@ jobs:
       - name: 리소스 임포트
         run: |
           set -x
-          # .import 캐시가 없으므로 한 번 에디터를 헤드리스로 돌려 임포트
-          "$GODOT" --path . --no-window --editor --quit || true
-          "$GODOT" --path . --no-window --editor --quit || true
+          # .import 캐시가 없으므로 첫 실행은 임포트만 하고 실패해도 무시
+          # (3.5에서는 --editor --quit 가 임포트 전에 종료되므로 --export 로 임포트)
+          mkdir -p build/ios
+          "$GODOT" --path . --no-window --export "iOS" "$PWD/build/ios/${APP_NAME}.ipa" || true
 
       - name: Xcode 프로젝트 내보내기
         run: |
           set -eux
           mkdir -p build/ios
+          # 임포트가 끝난 상태에서 실제 내보내기
           "$GODOT" --path . --no-window --export "iOS" "$PWD/build/ios/${APP_NAME}.ipa"
           find build/ios -maxdepth 2 | head -40
 
