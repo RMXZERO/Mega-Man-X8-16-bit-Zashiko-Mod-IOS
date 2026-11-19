@@ -166,6 +166,7 @@ def apply_korean():
 OVERLAY_GD = r'''extends CanvasLayer
 # iOS 가상 패드 (UnleashedRecompiled 의 XeniOS 스타일 레이아웃을 Godot 으로 옮김)
 # - 왼쪽: 스틱 + D-패드 링 / 오른쪽: A B X Y / 위: LB RB BACK START / 양옆: LT RT
+# - 캐릭터를 고른 뒤 스테이지(플레이어가 있을 때)에서만 표시, 메뉴에서는 화면을 직접 터치
 # - 블루투스 컨트롤러가 연결되어 있으면 자동으로 숨김
 
 const STICK_DEADZONE = 0.14
@@ -180,8 +181,8 @@ var stick_frame = Rect2(0.055, 0.560, 0.190, 0.315)
 var buttons = [
 	["back", "BACK", Rect2(0.390, 0.045, 0.080, 0.112), ["select"]],
 	["start", "START", Rect2(0.495, 0.045, 0.085, 0.112), ["pause"]],
-	["lb", "LB", Rect2(0.660, 0.050, 0.085, 0.112), ["weapon_select_left"]],
-	["rb", "RB", Rect2(0.765, 0.050, 0.085, 0.112), ["weapon_select_right"]],
+	["lb", "LB", Rect2(0.095, 0.268, 0.120, 0.112), ["weapon_select_left"]],
+	["rb", "RB", Rect2(0.860, 0.268, 0.120, 0.112), ["weapon_select_right"]],
 	["lt", "LT", Rect2(0.095, 0.405, 0.120, 0.110), ["reset_weapon"]],
 	["rt", "RT", Rect2(0.860, 0.405, 0.120, 0.110), ["select_special"]],
 	["y", "Y", Rect2(0.760, 0.455, 0.065, 0.115), ["alt_fire"]],
@@ -203,6 +204,9 @@ var captures: Dictionary = {}
 var active: Dictionary = {}
 var shown: bool = false
 var timer: float = 0.0
+var tap_index: int = -1
+var tap_button = null
+var tap_fired: bool = false
 
 
 func _ready() -> void:
@@ -223,12 +227,19 @@ func _on_joy_changed(_device: int, _connected: bool) -> void:
 	timer = 0.0
 
 
+func _in_stage() -> bool:
+	var gm = get_node_or_null("/root/GameManager")
+	if gm != null and gm.has_method("is_player_in_scene"):
+		return gm.is_player_in_scene()
+	return false
+
+
 func _process(delta: float) -> void:
 	timer -= delta
 	if timer > 0.0:
 		return
-	timer = 0.4
-	var want_show = OS.get_name() == "iOS" and Input.get_connected_joypads().size() == 0
+	timer = 0.15
+	var want_show = OS.get_name() == "iOS" and Input.get_connected_joypads().size() == 0 and _in_stage()
 	if want_show != shown:
 		set_shown(want_show)
 
@@ -308,25 +319,93 @@ func _stick_vector(sf: Rect2, cap: Dictionary) -> Vector2:
 
 
 func _input(event: InputEvent) -> void:
-	if not shown:
+	if OS.get_name() != "iOS":
 		return
 	if event is InputEventScreenTouch:
 		if event.pressed:
 			var p = event.position
-			var id = _find_control(p)
+			var id = ""
+			if shown:
+				id = _find_control(p)
 			if id == "":
+				_begin_tap(event.index, p)
 				return
 			var cap = {"control": id, "zone": "", "anchor": p, "current": p}
 			if id == "stick":
 				cap["zone"] = _stick_zone(_to_window(stick_frame), p)
 			captures[event.index] = cap
 		else:
+			if event.index == tap_index:
+				_end_tap(event.position)
 			captures.erase(event.index)
 		_apply()
 	elif event is InputEventScreenDrag:
 		if captures.has(event.index):
 			captures[event.index]["current"] = event.position
 			_apply()
+
+
+# 메뉴의 화살표 같은 X8 버튼을 직접 눌렀을 때: 기본 마우스 에뮬레이션으로 눌리지 않으면 대신 눌러 줌
+func _find_button_at(node: Node, p: Vector2):
+	if node == self:
+		return null
+	var kids = node.get_children()
+	for i in range(kids.size() - 1, -1, -1):
+		var found = _find_button_at(kids[i], p)
+		if found != null:
+			return found
+	if node is TextureButton and node.has_method("on_press") and node.is_visible_in_tree() and not node.disabled and node.focus_mode != Control.FOCUS_NONE:
+		if _button_has_point(node, p):
+			return node
+	return null
+
+
+func _button_has_point(b, p: Vector2) -> bool:
+	var local = b.get_global_transform_with_canvas().affine_inverse().xform(p)
+	return Rect2(Vector2.ZERO, b.rect_size).has_point(local)
+
+
+func _begin_tap(index: int, p: Vector2) -> void:
+	_clear_tap()
+	var b = _find_button_at(get_tree().root, p)
+	if b == null:
+		return
+	tap_index = index
+	tap_button = b
+	tap_fired = false
+	b.connect("pressed", self, "_on_tap_probe")
+
+
+func _on_tap_probe() -> void:
+	tap_fired = true
+
+
+func _clear_tap() -> void:
+	if tap_button != null and is_instance_valid(tap_button):
+		if tap_button.is_connected("pressed", self, "_on_tap_probe"):
+			tap_button.disconnect("pressed", self, "_on_tap_probe")
+	tap_index = -1
+	tap_button = null
+
+
+func _end_tap(p: Vector2) -> void:
+	var b = tap_button
+	if b == null or not is_instance_valid(b):
+		_clear_tap()
+		return
+	var inside = _button_has_point(b, p)
+	yield(get_tree(), "idle_frame")
+	yield(get_tree(), "idle_frame")
+	var fired = tap_fired
+	if is_instance_valid(b):
+		if b.is_connected("pressed", self, "_on_tap_probe"):
+			b.disconnect("pressed", self, "_on_tap_probe")
+		if inside and not fired and b.is_visible_in_tree() and b.focus_mode != Control.FOCUS_NONE:
+			b.grab_focus()
+			b.emit_signal("pressed")
+	if tap_button == b:
+		tap_index = -1
+		tap_button = null
 
 
 func _want_dir(want: Dictionary, dir: String) -> void:
