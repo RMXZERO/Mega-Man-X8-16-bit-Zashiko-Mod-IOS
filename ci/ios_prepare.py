@@ -285,8 +285,10 @@ func aspect() -> int:
 		return SceneTree.STRETCH_ASPECT_IGNORE
 	if m == ASPECT_WIDE:
 		# 16:9 보다 가로로 긴 화면(아이폰)에서만 넓힘. 4:3 같은 화면은 예전처럼 검은 띠
+		# 타이틀/옵션/캐릭터 선택 같은 메뉴는 398x224(16:9) 기준으로만 만들어져 있어서 넓히면 어긋남
+		# -> 스테이지(플레이어가 있을 때)에서만 넓히고, 메뉴는 예전처럼 16:9 + 검은 띠
 		var win = OS.window_size
-		if win.y > 0.0 and win.x / win.y >= BASE_SIZE.x / BASE_SIZE.y - 0.001:
+		if _in_stage() and win.y > 0.0 and win.x / win.y >= BASE_SIZE.x / BASE_SIZE.y - 0.001:
 			return SceneTree.STRETCH_ASPECT_EXPAND
 	return SceneTree.STRETCH_ASPECT_KEEP
 
@@ -463,6 +465,20 @@ func _find_control(p: Vector2) -> String:
 	return ""
 
 
+# 이전 위치에서 지금 위치까지 손가락이 지나간 길을 훑어 마지막으로 지난 버튼을 찾는다.
+# (폰에서 빠르게 문지르면 드래그 이벤트가 듬성듬성 와서 버튼 위를 건너뛰기 때문)
+func _find_button_on_path(a: Vector2, b: Vector2) -> String:
+	var found = ""
+	var steps = int(ceil(a.distance_to(b) / 4.0))
+	if steps < 1:
+		steps = 1
+	for i in range(1, steps + 1):
+		var id = _find_button_id(a.linear_interpolate(b, float(i) / float(steps)))
+		if id != "":
+			found = id
+	return found
+
+
 func _find_button_id(p: Vector2) -> String:
 	var best = ""
 	var best_d = 1.0e20
@@ -536,15 +552,23 @@ func _input(event: InputEvent) -> void:
 		else:
 			if event.index == tap_index:
 				_end_tap(event.position)
+			if captures.has(event.index):
+				var cr = captures[event.index]
+				if cr["control"] != "stick":
+					var rid = _find_button_on_path(cr["current"], _to_pad(event.position))
+					if rid != "" and rid != cr["control"]:
+						cr["control"] = rid
+						_apply()  # 눌림을 먼저 반영 (떼는 건 게임이 한 번 본 뒤에 처리됨)
 			captures.erase(event.index)
 		_apply()
 	elif event is InputEventScreenDrag:
 		if captures.has(event.index):
 			var cp = captures[event.index]
 			var dp = _to_pad(event.position)
+			var prev = cp["current"]
 			cp["current"] = dp
 			if cp["control"] != "stick":
-				var nid = _find_button_id(dp)
+				var nid = _find_button_on_path(prev, dp)
 				if nid != "" and nid != cp["control"]:
 					cp["control"] = nid  # 누른 채 문질러서 다른 버튼 위로 이동
 			_apply()
@@ -939,6 +963,21 @@ def patch_stretch():
          "가장 가까운 카메라 위치 계산")
 
 
+def patch_clear_color():
+    """프로젝트 기본 배경색(회색 4c4c4c)을 검정으로: 타이틀/옵션 등에서 비는 영역이 회색으로 보이는 것 방지."""
+    proj = read("project.godot")
+    if "environment/default_clear_color" in proj:
+        print("[skip] project.godot (기본 배경색 이미 설정됨)")
+        return
+    nl = "\r\n" if "\r\n" in proj else "\n"
+    m = re.search(r"^\[rendering\]\s*$", proj, re.M)
+    if not m:
+        sys.exit("[error] project.godot에 [rendering] 섹션이 없음")
+    proj = proj[: m.end()] + nl + "environment/default_clear_color=Color( 0, 0, 0, 1 )" + proj[m.end():]
+    write("project.godot", proj)
+    print("[ok]   project.godot += 기본 배경색 검정")
+
+
 if __name__ == "__main__":
     if not os.path.exists("project.godot"):
         sys.exit("[error] 저장소 루트(project.godot가 있는 곳)에서 실행하세요")
@@ -948,4 +987,5 @@ if __name__ == "__main__":
     patch_presets()
     patch_overlay()
     patch_stretch()
+    patch_clear_color()
     apply_korean()
