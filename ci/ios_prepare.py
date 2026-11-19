@@ -302,6 +302,19 @@ func _find_control(p: Vector2) -> String:
 	return ""
 
 
+func _find_button_id(p: Vector2) -> String:
+	var best = ""
+	var best_d = 1.0e20
+	for b in buttons:
+		var r = _to_window(b[2])
+		if _pill_contains(r, p, HIT_GROW):
+			var d = p.distance_squared_to(r.position + r.size * 0.5)
+			if d < best_d:
+				best_d = d
+				best = b[0]
+	return best
+
+
 # 스틱 터치 영역: 기존처럼 고정된 스틱 위치(stick_frame) 안에서만 시작
 func _stick_area_has(p: Vector2) -> bool:
 	return _to_window(stick_frame).has_point(p)
@@ -352,9 +365,11 @@ func _input(event: InputEvent) -> void:
 			if id == "":
 				_begin_tap(event.index, p)
 				return
-			var cap = {"control": id, "zone": "", "anchor": p, "current": p}
+			var cap = {"control": id, "origin": id, "zone": "", "anchor": p, "current": p}
 			if id == "stick":
 				cap["zone"] = "stick"
+				var sfc = _to_window(stick_frame)
+				cap["anchor"] = sfc.position + sfc.size * 0.5  # 스틱 중심 고정
 			captures[event.index] = cap
 		else:
 			if event.index == tap_index:
@@ -365,12 +380,10 @@ func _input(event: InputEvent) -> void:
 		if captures.has(event.index):
 			var cp = captures[event.index]
 			cp["current"] = event.position
-			if cp["control"] == "stick":
-				var sfw = _to_window(stick_frame)
-				var outer = min(sfw.size.x, sfw.size.y) * STICK_ACTIVATION_RADIUS
-				var dd = cp["current"] - cp["anchor"]
-				if dd.length() > outer:
-					cp["anchor"] = cp["current"] - dd.normalized() * outer
+			if cp["control"] != "stick":
+				var nid = _find_button_id(event.position)
+				if nid != "" and nid != cp["control"]:
+					cp["control"] = nid  # 누른 채 문질러서 다른 버튼 위로 이동
 			_apply()
 
 
@@ -475,7 +488,7 @@ func _apply() -> void:
 				_want_dir(want, z)
 		else:
 			for b in buttons:
-				if b[0] == cap["control"]:
+				if b[0] == cap["control"] or b[0] == cap.get("origin", ""):
 					for a in b[3]:
 						want[a] = true
 	for a in active.keys():
@@ -630,6 +643,8 @@ func _on_draw() -> void:
 	var held = {}
 	for i2 in captures.keys():
 		held[captures[i2]["control"]] = true
+		if captures[i2].has("origin"):
+			held[captures[i2]["origin"]] = true
 	for b in buttons:
 		var r = _to_window(b[2])
 		var is_held = held.has(b[0])
