@@ -40,6 +40,15 @@ jobs:
       - name: 소스 전처리 (iOS 터치 컨트롤 / 텍스처 압축 / 프리셋)
         run: python3 ci/ios_prepare.py
 
+      - name: 불투명 앱스토어 아이콘 생성 + build 폴더 임포트 제외
+        run: |
+          set -eux
+          # Godot iOS 내보내기는 1024 앱스토어 아이콘이 불투명(알파 없음)이어야 함
+          sips -s format jpeg -s formatOptions 100 -z 1024 1024 icon.png --out ci_icon_1024.jpg
+          # 내보내기 결과물이 프로젝트 리소스로 임포트되지 않게 제외
+          mkdir -p build/ios
+          touch build/.gdignore
+
       - name: 리소스 임포트
         run: |
           set -x
