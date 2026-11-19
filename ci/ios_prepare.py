@@ -175,6 +175,11 @@ const STICK_DPAD_RING_RADIUS = 0.32
 const WIDE_SCREEN_SAFE_MARGIN = 0.055
 const DIGITAL_THRESHOLD = 0.25
 const HIT_GROW = 1.5  # 버튼 터치 판정 배율 (그려진 크기 대비)
+const BASE_SIZE = Vector2(398.0, 224.0)  # 게임 기준 해상도 (16:9)
+const ASPECT_STRETCH = 0   # 비율 무시, 화면 전체로 늘림
+const ASPECT_KEEP = 1      # 비율 유지 (양옆 검은 띠)
+const ASPECT_WIDE = 2      # 화면 비율에 맞춰 가로로 더 넓게 보이게
+const DEFAULT_ASPECT = __DEFAULT_ASPECT__
 
 var stick_frame = Rect2(0.0265, 0.5353, 0.2470, 0.4095)
 
@@ -211,6 +216,8 @@ var tap_fired: bool = false
 var press_pf: Dictionary = {}      # 액션별 눌린 시점의 물리 프레임
 var press_if: Dictionary = {}      # 액션별 눌린 시점의 idle 프레임
 var pending_release: Dictionary = {}  # 게임이 한 번도 못 본 채 떼어진 액션 (보류)
+var last_extra: float = 0.0           # 마지막으로 반영한 '양옆 늘어난 폭의 절반'
+var last_aspect: int = -1             # 마지막으로 적용한 stretch aspect
 
 
 func _ready() -> void:
@@ -223,7 +230,10 @@ func _ready() -> void:
 	canvas.connect("draw", self, "_on_draw")
 	font = canvas.get_font("font", "Label")
 	Input.connect("joy_connection_changed", self, "_on_joy_changed")
+	get_tree().connect("node_added", self, "_on_node_added")
+	_apply_stretch()
 	set_shown(false)
+	_update_layer_transform()
 	timer = 0.0
 
 
@@ -248,9 +258,160 @@ func _process(delta: float) -> void:
 	if timer > 0.0:
 		return
 	timer = 0.15
+	_apply_stretch()
+	_update_layer_transform()
 	var want_show = OS.get_name() == "iOS" and Input.get_connected_joypads().size() == 0 and _in_stage()
 	if want_show != shown:
 		set_shown(want_show)
+
+
+# ---- 화면 비율 모드 (옵션 'Aspect Ratio') ----
+# 0 = 늘리기(비율 무시) / 1 = 검은 띠 / 2 = 가로로 더 넓게
+func aspect_mode() -> int:
+	if OS.get_name() != "iOS":
+		return ASPECT_KEEP
+	var cfg = get_node_or_null("/root/Configurations")
+	if cfg != null:
+		var v = cfg.get("Aspect")
+		if v != null:
+			return int(v)
+	return DEFAULT_ASPECT
+
+
+# 다른 스크립트(GameManager 등)가 set_screen_stretch 에 넘길 비율 모드
+func aspect() -> int:
+	var m = aspect_mode()
+	if m == ASPECT_STRETCH:
+		return SceneTree.STRETCH_ASPECT_IGNORE
+	if m == ASPECT_WIDE:
+		# 16:9 보다 가로로 긴 화면(아이폰)에서만 넓힘. 4:3 같은 화면은 예전처럼 검은 띠
+		var win = OS.window_size
+		if win.y > 0.0 and win.x / win.y >= BASE_SIZE.x / BASE_SIZE.y - 0.001:
+			return SceneTree.STRETCH_ASPECT_EXPAND
+	return SceneTree.STRETCH_ASPECT_KEEP
+
+
+func _apply_stretch() -> void:
+	var a = aspect()
+	if a == last_aspect:
+		return
+	last_aspect = a
+	var mode = SceneTree.STRETCH_MODE_2D
+	var cfg = get_node_or_null("/root/Configurations")
+	if cfg != null and cfg.get("StretchMode"):
+		mode = SceneTree.STRETCH_MODE_VIEWPORT
+	get_tree().set_screen_stretch(mode, a, BASE_SIZE)
+
+
+# 게임 화면의 가로 폭. WIDE 모드에서만 398 보다 넓어짐 (StateCamera 가 사용)
+func view_width() -> float:
+	if aspect_mode() == ASPECT_WIDE:
+		return max(get_viewport().get_visible_rect().size.x, BASE_SIZE.x)
+	return BASE_SIZE.x
+
+
+# 양옆으로 늘어난 폭의 절반. UI 는 이만큼 옮겨서 예전 16:9 영역 가운데에 둔다
+func wide_extra() -> float:
+	return (view_width() - BASE_SIZE.x) * 0.5
+
+
+# 이 레이어(패드)가 화면 위에 그려지는 방식을 모드에 맞게 보정
+func _update_layer_transform() -> void:
+	var sc = Vector2(1.0, 1.0)
+	var off = Vector2.ZERO
+	var mode = aspect_mode()
+	if mode == ASPECT_STRETCH:
+		# 늘리기 모드: 화면 전체가 가로로 늘어나므로 패드만 반대로 줄여서 예전 위치/모양 유지
+		var win = OS.window_size
+		if win.x > 0.0 and win.y > 0.0:
+			var r = win.x / win.y
+			var base_r = BASE_SIZE.x / BASE_SIZE.y
+			if r > base_r:
+				sc.x = base_r / r
+			elif r < base_r:
+				sc.y = r / base_r
+		off = Vector2(BASE_SIZE.x * 0.5 * (1.0 - sc.x), BASE_SIZE.y * 0.5 * (1.0 - sc.y))
+	elif mode == ASPECT_WIDE:
+		off = Vector2(wide_extra(), 0.0)
+	scale = sc
+	offset = off
+	if abs(wide_extra() - last_extra) > 0.01:
+		_refresh_wide()
+
+
+# ---- 넓은 화면(WIDE) 모드: 게임의 UI 를 16:9 영역 가운데로 ----
+# 세계(스테이지)는 화면 전체로 넓어지고, HUD/메뉴/대화창은 지금까지처럼 가운데 16:9 영역에 그려진다.
+func _on_node_added(n: Node) -> void:
+	if n is CanvasLayer:
+		if n != self and not (n is ParallaxBackground):
+			call_deferred("_adopt_layer", n)
+	elif n is Control:
+		var p = n.get_parent()
+		if p != null and p is CanvasLayer and p.is_in_group("wide_ui"):
+			call_deferred("_adopt_control", n)
+
+
+func _adopt_layer(l) -> void:
+	if not is_instance_valid(l) or not (l is CanvasLayer):
+		return
+	if l.is_in_group("wide_ui"):
+		return
+	if l.layer >= 120:
+		# CRT 같은 전체 화면 효과 레이어: 옮기지 않고 폭만 넓힌다
+		for c in l.get_children():
+			if c is ColorRect:
+				c.rect_size = Vector2(view_width(), c.rect_size.y)
+				if c.material is ShaderMaterial:
+					c.material.set_shader_param("resolution", Vector2(view_width(), BASE_SIZE.y))
+		return
+	l.add_to_group("wide_ui")
+	l.set_meta("wide_base", l.offset)
+	_apply_layer(l)
+
+
+func _apply_layer(l) -> void:
+	var base = Vector2.ZERO
+	if l.has_meta("wide_base"):
+		base = l.get_meta("wide_base")
+	l.offset = base + Vector2(wide_extra(), 0.0)
+	for c in l.get_children():
+		_adopt_control(c)
+
+
+func _refresh_wide() -> void:
+	last_extra = wide_extra()
+	for l in get_tree().get_nodes_in_group("wide_ui"):
+		if is_instance_valid(l):
+			_apply_layer(l)
+
+
+func _adopt_control(c) -> void:
+	if not is_instance_valid(c) or not (c is Control):
+		return
+	var s = wide_extra()
+	var done = 0.0
+	if c.has_meta("wide_done"):
+		done = c.get_meta("wide_done")
+	var d = s - done
+	if abs(d) < 0.01:
+		return
+	# 오른쪽/가운데 기준(앵커)으로 놓인 컨트롤은 화면이 넓어진 만큼 밀리므로, 원래 398 폭 기준 위치로 되돌린다
+	if c.anchor_left != 0.0 or c.anchor_right != 0.0:
+		c.margin_left -= c.anchor_left * 2.0 * d
+		c.margin_right -= c.anchor_right * 2.0 * d
+	if not c.has_meta("wide_done"):
+		# 화면 전체를 덮는 색 상자(페이드/번쩍임/배경색)면 양옆 끝까지 넓힌다
+		if c is ColorRect and c.rect_size.x >= BASE_SIZE.x - 2.0 and c.rect_size.y >= BASE_SIZE.y - 2.0:
+			c.set_meta("wide_rect", true)
+	if c.has_meta("wide_rect"):
+		c.rect_position = Vector2(c.rect_position.x - d, c.rect_position.y)
+		c.rect_size = Vector2(c.rect_size.x + 2.0 * d, c.rect_size.y)
+	c.set_meta("wide_done", s)
+
+
+# 화면(뷰포트) 터치 좌표 -> 패드 좌표 (위 레이어 변환의 역변환)
+func _to_pad(p: Vector2) -> Vector2:
+	return Vector2((p.x - offset.x) / scale.x, (p.y - offset.y) / scale.y)
 
 
 func set_shown(v: bool) -> void:
@@ -262,7 +423,7 @@ func set_shown(v: bool) -> void:
 
 
 func _space() -> Rect2:
-	var s = get_viewport().get_visible_rect().size
+	var s = BASE_SIZE
 	var margin = 0.0
 	if (s.x / s.y) > 1.9:
 		margin = s.x * WIDE_SCREEN_SAFE_MARGIN
@@ -359,13 +520,14 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		if event.pressed:
 			var p = event.position
+			var pp = _to_pad(p)
 			var id = ""
 			if shown:
-				id = _find_control(p)
+				id = _find_control(pp)
 			if id == "":
 				_begin_tap(event.index, p)
 				return
-			var cap = {"control": id, "origin": id, "zone": "", "anchor": p, "current": p}
+			var cap = {"control": id, "origin": id, "zone": "", "anchor": pp, "current": pp}
 			if id == "stick":
 				cap["zone"] = "stick"
 				var sfc = _to_window(stick_frame)
@@ -379,9 +541,10 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag:
 		if captures.has(event.index):
 			var cp = captures[event.index]
-			cp["current"] = event.position
+			var dp = _to_pad(event.position)
+			cp["current"] = dp
 			if cp["control"] != "stick":
-				var nid = _find_button_id(event.position)
+				var nid = _find_button_id(dp)
 				if nid != "" and nid != cp["control"]:
 					cp["control"] = nid  # 누른 채 문질러서 다른 버튼 위로 이동
 			_apply()
@@ -665,7 +828,7 @@ func _on_draw() -> void:
 
 def patch_overlay():
     path = os.path.join("System", "IOSTouchOverlay.gd")
-    write(path, OVERLAY_GD)
+    write(path, OVERLAY_GD.replace("__DEFAULT_ASPECT__", str(ASPECT_NUM[ASPECT_DEFAULT])))
     print(f"[ok]   {path} (iOS 가상 패드)")
     proj = read("project.godot")
     if "IOSTouchOverlay=" in proj:
@@ -681,6 +844,101 @@ def patch_overlay():
     print("[ok]   project.godot += IOSTouchOverlay autoload")
 
 
+# 기본 화면 모드: wide(가로로 더 넓게) / stretch(화면 전체로 늘림) / keep(검은 띠).
+# 빌드할 때 환경변수 ASPECT_DEFAULT 로 바꿀 수 있음 (게임 옵션 'Aspect Ratio' 에서도 바꿀 수 있음)
+ASPECT_DEFAULT = os.environ.get("ASPECT_DEFAULT", "wide").strip().lower()
+ASPECT_NUM = {"stretch": 0, "keep": 1, "wide": 2}
+if ASPECT_DEFAULT not in ASPECT_NUM:
+    sys.exit("[error] ASPECT_DEFAULT 는 wide / stretch / keep 중 하나여야 함: " + ASPECT_DEFAULT)
+
+
+def _sub(path, old, new, label):
+    """정확히 한 번 나오는 문자열을 바꿈 (줄바꿈 형식 유지, 이미 적용됐으면 건너뜀)."""
+    src = read(path)
+    nl = "\r\n" if "\r\n" in src else "\n"
+    old = old.replace("\n", nl)
+    new = new.replace("\n", nl)
+    if new in src:
+        print(f"[skip] {path}: {label} (이미 적용됨)")
+        return
+    if src.count(old) != 1:
+        print(f"[warn] {path}: {label} 위치를 찾지 못함 ({src.count(old)}곳) - 소스가 바뀌었는지 확인")
+        return
+    write(path, src.replace(old, new))
+    print(f"[ok]   {path}: {label}")
+
+
+def patch_stretch():
+    """iOS: 화면 양옆 검은 띠 제거.
+    wide    : 화면 폭만큼 세계를 가로로 더 넓게 보여 줌 (UI/패드는 예전 16:9 영역 그대로)
+    stretch : 비율 무시하고 화면 전체로 늘림 (패드는 예전 모양/위치 유지)
+    keep    : 예전처럼 검은 띠
+    """
+    # 1) project.godot 기본 비율 (wide 는 오버레이가 시작 직후 적용하므로 keep 으로 둠)
+    want = "ignore" if ASPECT_DEFAULT == "stretch" else "keep"
+    proj = read("project.godot")
+    new = re.sub(r'^(window/stretch/aspect=)"[a-z_]+"', r'\1"' + want + '"', proj, flags=re.M)
+    if new != proj:
+        write("project.godot", new)
+        print(f'[ok]   project.godot window/stretch/aspect = "{want}"')
+    else:
+        print("[skip] project.godot (stretch aspect 이미 설정됨 / 해당 줄 없음)")
+
+    # 2) 코드 안에서 keep 으로 되돌리는 곳 -> 오버레이가 정한 값 사용
+    for path in ["src/Scripts/GameManager.gd", "src/Options/Stretch_Mode.gd"]:
+        src = read(path)
+        if "SceneTree.STRETCH_ASPECT_KEEP" in src:
+            write(path, src.replace("SceneTree.STRETCH_ASPECT_KEEP", "IOSTouchOverlay.aspect()"))
+            print(f"[ok]   {path}: STRETCH_ASPECT_KEEP -> IOSTouchOverlay.aspect()")
+        else:
+            print(f"[skip] {path} (이미 적용됨)")
+
+    # 3) 옵션 'Aspect Ratio': 값 2(WIDE) 추가, 기본값은 ASPECT_DEFAULT
+    opt = "src/Options/Fullscreen.gd"
+    first = ASPECT_NUM[ASPECT_DEFAULT]
+    order = [first] + [v for v in (2, 0, 1) if v != first]
+    _sub(opt, "var aspect_options = [0, 1]\n",
+         "var aspect_options = [" + ", ".join(str(v) for v in order) + "]\n", "옵션 순환 목록")
+    _sub(opt,
+         "\t\tget_tree().set_screen_stretch(SceneTree.STRETCH_MODE_2D, SceneTree.STRETCH_ASPECT_KEEP, GameManager.Resolution)\n",
+         "\t\tget_tree().set_screen_stretch(SceneTree.STRETCH_MODE_2D, SceneTree.STRETCH_ASPECT_KEEP, GameManager.Resolution)\n"
+         "\telif aspect_value == 2:\n"
+         "\t\tget_tree().set_screen_stretch(SceneTree.STRETCH_MODE_2D, IOSTouchOverlay.aspect(), GameManager.Resolution)\n",
+         "WIDE 적용")
+    _sub(opt,
+         "\t\telif get_aspect_ratio() == 1:\n\t\t\tdisplay_value(\"KEEP_VALUE\")\n",
+         "\t\telif get_aspect_ratio() == 1:\n\t\t\tdisplay_value(\"KEEP_VALUE\")\n"
+         "\t\telif get_aspect_ratio() == 2:\n\t\t\tdisplay_value(\"WIDE\")\n",
+         "WIDE 표시")
+    _sub(opt, "func get_aspect_ratio():\n\treturn Configurations.get(\"Aspect\")\n",
+         "func get_aspect_ratio():\n\treturn IOSTouchOverlay.aspect_mode()\n", "Aspect 기본값")
+
+    # 4) 카메라: 화면 폭이 넓어진 만큼 카메라 한계 계산에 반영
+    cam = "src/System/StateCamera.gd"
+    _sub(cam, "const width: = 398\n", "var width: = 398.0   # iOS-PORT: 화면 폭 (WIDE 모드에서 넓어짐)\n", "width 상수 -> 변수")
+    _sub(cam, "func _process(delta: float) -> void :\n\tvar new_pos: = global_position\n",
+         "func _process(delta: float) -> void :\n\twidth = IOSTouchOverlay.view_width()\n\tvar new_pos: = global_position\n",
+         "매 프레임 폭 갱신")
+    _sub(cam,
+         "func get_boundary_position_left() -> float:\n\treturn custom_limits_left + float(width) / 2\n"
+         "func get_boundary_position_right() -> float:\n\treturn custom_limits_right - float(width) / 2\n",
+         "func get_boundary_position_left() -> float:\n"
+         "\tif width > 398.0 and custom_limits_right - custom_limits_left < width:\n"
+         "\t\treturn (custom_limits_left + custom_limits_right) / 2.0\n"
+         "\treturn custom_limits_left + float(width) / 2\n"
+         "func get_boundary_position_right() -> float:\n"
+         "\tif width > 398.0 and custom_limits_right - custom_limits_left < width:\n"
+         "\t\treturn (custom_limits_left + custom_limits_right) / 2.0\n"
+         "\treturn custom_limits_right - float(width) / 2\n",
+         "화면보다 좁은 방은 가운데 고정")
+    _sub(cam,
+         "\tif is_over_left_limit(pos):\n\t\tpos.x = custom_limits_left + float(width) / 2\n"
+         "\telif is_over_right_limit(pos):\n\t\tpos.x = custom_limits_right - float(width) / 2\n",
+         "\tif is_over_left_limit(pos):\n\t\tpos.x = get_boundary_position_left()\n"
+         "\telif is_over_right_limit(pos):\n\t\tpos.x = get_boundary_position_right()\n",
+         "가장 가까운 카메라 위치 계산")
+
+
 if __name__ == "__main__":
     if not os.path.exists("project.godot"):
         sys.exit("[error] 저장소 루트(project.godot가 있는 곳)에서 실행하세요")
@@ -689,4 +947,5 @@ if __name__ == "__main__":
     patch_project_godot()
     patch_presets()
     patch_overlay()
+    patch_stretch()
     apply_korean()
