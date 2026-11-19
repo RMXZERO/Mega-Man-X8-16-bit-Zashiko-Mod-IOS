@@ -15,6 +15,7 @@ env:
   GODOT_VERSION: ${{ github.event.inputs.godot_version }}
   BUNDLE_ID: ${{ github.event.inputs.bundle_id }}
   APP_NAME: MMX8
+  APP_DISPLAY_NAME: "MMX8 Zashiko-Mod"
 
 jobs:
   build:
@@ -69,6 +70,17 @@ jobs:
           # 임포트가 끝난 상태에서 실제 내보내기
           "$GODOT" --path . --no-window --export "iOS" "$PWD/build/ios/${APP_NAME}.ipa"
           find build/ios -maxdepth 2 | head -40
+
+      - name: 홈 화면 앱 이름 설정
+        run: |
+          set -eux
+          PLIST="build/ios/$APP_NAME/${APP_NAME}-Info.plist"
+          test -f "$PLIST"
+          for KEY in CFBundleDisplayName CFBundleName; do
+            /usr/libexec/PlistBuddy -c "Set :$KEY $APP_DISPLAY_NAME" "$PLIST" \
+              || /usr/libexec/PlistBuddy -c "Add :$KEY string $APP_DISPLAY_NAME" "$PLIST"
+          done
+          /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" -c "Print :CFBundleName" -c "Print :CFBundleIdentifier" "$PLIST"
 
       - name: 무음 모드에서도 소리 나게 (오디오 세션 Playback 패치)
         run: |
