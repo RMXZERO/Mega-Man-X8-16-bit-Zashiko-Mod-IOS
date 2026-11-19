@@ -70,6 +70,56 @@ jobs:
           "$GODOT" --path . --no-window --export "iOS" "$PWD/build/ios/${APP_NAME}.ipa"
           find build/ios -maxdepth 2 | head -40
 
+      - name: 무음 모드에서도 소리 나게 (오디오 세션 Playback 패치)
+        run: |
+          set -eux
+          cd build/ios
+          PBX="$(ls -d *.xcodeproj | head -1)/project.pbxproj"
+          DUMMY="$APP_NAME/dummy.cpp"
+          if [ -f "$DUMMY" ] && grep -q 'dummy\.cpp' "$PBX"; then
+            # dummy.cpp 를 Objective-C++ (.mm) 로 바꿔서 오디오 세션 코드를 추가
+            sed -e '/dummy\.cpp/{s/dummy\.cpp/dummy.mm/g;s/sourcecode\.cpp\.cpp/sourcecode.cpp.objcpp/;}' "$PBX" > /tmp/pbx.new
+            grep -q 'dummy\.mm' /tmp/pbx.new
+            mv /tmp/pbx.new "$PBX"
+            mv "$DUMMY" "$APP_NAME/dummy.mm"
+            cat >> "$APP_NAME/dummy.mm" <<'EOF'
+
+            #import <UIKit/UIKit.h>
+            #import <AVFoundation/AVFoundation.h>
+
+            static void mmx8_activate_playback_session(void) {
+            	AVAudioSession *session = [AVAudioSession sharedInstance];
+            	[session setCategory:AVAudioSessionCategoryPlayback error:nil];
+            	[session setActive:YES error:nil];
+            }
+
+            @interface MMX8AudioSessionHook : NSObject
+            @end
+
+            @implementation MMX8AudioSessionHook
+            + (void)load {
+            	@autoreleasepool {
+            		mmx8_activate_playback_session();
+            		NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+            		[nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            			mmx8_activate_playback_session();
+            		}];
+            		[nc addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *n) {
+            			mmx8_activate_playback_session();
+            		}];
+            		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            			mmx8_activate_playback_session();
+            		});
+            	}
+            }
+            @end
+          EOF
+            grep -n 'dummy' "$PBX" | head
+          else
+            echo "::warning::dummy.cpp 를 찾지 못해 오디오 세션 패치를 건너뜀"
+            ls -R . | head -40
+          fi
+
       - name: 서명 없이 빌드 → IPA 패키징
         run: |
           set -euxo pipefail
@@ -80,6 +130,7 @@ jobs:
             -derivedDataPath build/dd \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            OTHER_LDFLAGS='$(inherited) -framework AVFoundation' \
             build
           APP="$(find build/dd/Build/Products -maxdepth 2 -name '*.app' -path '*iphoneos*' | head -1)"
           rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
