@@ -170,26 +170,26 @@ OVERLAY_GD = r'''extends CanvasLayer
 # - 블루투스 컨트롤러가 연결되어 있으면 자동으로 숨김
 
 const STICK_DEADZONE = 0.10
-const STICK_ACTIVATION_RADIUS = 0.40
+const STICK_ACTIVATION_RADIUS = 0.308
 const STICK_DPAD_RING_RADIUS = 0.32
 const WIDE_SCREEN_SAFE_MARGIN = 0.055
 const DIGITAL_THRESHOLD = 0.25
 const HIT_GROW = 1.5  # 버튼 터치 판정 배율 (그려진 크기 대비)
 
-var stick_frame = Rect2(0.055, 0.560, 0.190, 0.315)
+var stick_frame = Rect2(0.0265, 0.5353, 0.2470, 0.4095)
 
 # [id, 표시 글자, 프레임(0~1), 연결할 게임 액션]
 var buttons = [
 	["back", "BACK", Rect2(0.390, 0.045, 0.080, 0.112), ["select"]],
 	["start", "START", Rect2(0.495, 0.045, 0.085, 0.112), ["pause"]],
-	["lb", "LB", Rect2(0.095, 0.268, 0.120, 0.112), ["weapon_select_left"]],
-	["rb", "RB", Rect2(0.860, 0.268, 0.120, 0.112), ["weapon_select_right"]],
-	["lt", "LT", Rect2(0.095, 0.405, 0.120, 0.110), ["reset_weapon"]],
-	["rt", "RT", Rect2(0.860, 0.405, 0.120, 0.110), ["select_special"]],
-	["y", "Y", Rect2(0.760, 0.455, 0.065, 0.115), ["alt_fire"]],
-	["x", "X", Rect2(0.700, 0.585, 0.065, 0.115), ["fire", "ui_accept"]],
-	["b", "B", Rect2(0.820, 0.585, 0.065, 0.115), ["dash", "ui_cancel"]],
-	["a", "A", Rect2(0.760, 0.715, 0.065, 0.115), ["jump", "ui_accept"]],
+	["lb", "LB", Rect2(0.095, 0.168, 0.120, 0.112), ["weapon_select_left"]],
+	["rb", "RB", Rect2(0.860, 0.168, 0.120, 0.112), ["weapon_select_right"]],
+	["lt", "LT", Rect2(0.095, 0.305, 0.120, 0.110), ["reset_weapon"]],
+	["rt", "RT", Rect2(0.860, 0.305, 0.120, 0.110), ["select_special"]],
+	["y", "Y", Rect2(0.8263, 0.5329, 0.0845, 0.1495), ["alt_fire"]],
+	["x", "X", Rect2(0.7572, 0.6623, 0.0845, 0.1495), ["fire", "ui_accept"]],
+	["b", "B", Rect2(0.8954, 0.6623, 0.0845, 0.1495), ["dash", "ui_cancel"]],
+	["a", "A", Rect2(0.8263, 0.7918, 0.0845, 0.1495), ["jump", "ui_accept"]],
 ]
 
 var dir_actions = {
@@ -302,12 +302,9 @@ func _find_control(p: Vector2) -> String:
 	return ""
 
 
-# 플로팅 스틱 영역: 화면 왼쪽 절반(검은 여백 포함). 일시정지 메뉴 중에는 기존 고정 위치만 사용
+# 스틱 터치 영역: 기존처럼 고정된 스틱 위치(stick_frame) 안에서만 시작
 func _stick_area_has(p: Vector2) -> bool:
-	if get_tree().paused:
-		return _to_window(stick_frame).has_point(p)
-	var s = get_viewport().get_visible_rect().size
-	return p.x < s.x * 0.5 and p.y > s.y * 0.15
+	return _to_window(stick_frame).has_point(p)
 
 
 func _stick_zone(sf: Rect2, p: Vector2) -> String:
