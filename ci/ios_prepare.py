@@ -451,14 +451,28 @@ func _apply() -> void:
 						want[a] = true
 	for a in active.keys():
 		if not want.has(a):
-			Input.action_release(a)
+			_send_action(a, false)
 			active.erase(a)
 	for a in want.keys():
 		if not active.has(a):
-			Input.action_press(a)
+			_send_action(a, true)
 			active[a] = true
 	if canvas:
 		canvas.update()
+
+
+# Input.action_press() 는 폴링(is_action_pressed)만 바꾸고 _input(event) 로는 이벤트가 안 간다.
+# Pause.gd 등은 event.is_action_pressed() 를 쓰므로 InputEventAction 을 직접 주입한다.
+# (parse_input_event 는 액션 상태도 같이 갱신하므로 폴링 방식 코드도 그대로 동작)
+func _send_action(a: String, pressed: bool) -> void:
+	var ev = InputEventAction.new()
+	ev.action = a
+	ev.pressed = pressed
+	if pressed:
+		ev.strength = 1.0
+	else:
+		ev.strength = 0.0
+	Input.parse_input_event(ev)
 
 
 func _white(alpha: float) -> Color:
