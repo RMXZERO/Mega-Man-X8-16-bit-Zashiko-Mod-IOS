@@ -107,8 +107,8 @@ application/app_store_team_id="{team}"
 application/identifier="{bundle}"
 application/bundle_identifier="{bundle}"
 icons/app_store_1024x1024="res://ci_icon_1024.png"
-application/short_version="1.1"
-application/version="1.1"
+application/short_version="1.2"
+application/version="1.2"
 application/launch_screens_interpolation=0
 application/targeted_device_family=2
 orientation/portrait=false
@@ -200,6 +200,7 @@ var dir_actions = {
 
 var canvas: Control
 var font: Font
+var label_fonts: Dictionary = {}
 var captures: Dictionary = {}
 var active: Dictionary = {}
 var shown: bool = false
@@ -507,18 +508,43 @@ func _capsule(r: Rect2) -> PoolVector2Array:
 	return pts
 
 
+# 화면 픽셀 / 게임 기준 픽셀(398x224) 배율. 글자를 이 배율만큼 크게 래스터라이즈해서 선명하게 그린다.
+func _screen_scale() -> float:
+	var win = OS.window_size
+	var vis = get_viewport().get_visible_rect().size
+	if vis.x <= 0.0 or vis.y <= 0.0:
+		return 1.0
+	return max(min(win.x / vis.x, win.y / vis.y), 1.0)
+
+
+func _get_label_font(px: int) -> Font:
+	if label_fonts.has(px):
+		return label_fonts[px]
+	var data = load("res://src/Fonts/OpenSans-Bold.ttf")
+	if data == null:
+		return font
+	var f = DynamicFont.new()
+	f.font_data = data
+	f.size = px
+	f.use_filter = true
+	label_fonts[px] = f
+	return f
+
+
 func _label(text: String, r: Rect2, col: Color) -> void:
-	if font == null:
-		return
+	var s = _screen_scale()
 	var size_px = min(r.size.x, r.size.y) * 0.42
 	if text.length() > 2:
 		size_px = min(r.size.x, r.size.y) * 0.30
-	var k = size_px / font.get_height()
-	var w = font.get_string_size(text).x * k
+	var f = _get_label_font(int(round(size_px * s)))
+	if f == null:
+		return
+	var k = 1.0 / s
+	var w = f.get_string_size(text).x * k
 	var c = r.position + r.size * 0.5
-	var baseline = c.y + (font.get_ascent() - font.get_height() * 0.5) * k
+	var baseline = c.y + (f.get_ascent() - f.get_height() * 0.5) * k
 	canvas.draw_set_transform(Vector2(c.x - w * 0.5, baseline), 0.0, Vector2(k, k))
-	canvas.draw_string(font, Vector2.ZERO, text, col)
+	canvas.draw_string(f, Vector2.ZERO, text, col)
 	canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
