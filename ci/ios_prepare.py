@@ -163,6 +163,177 @@ def apply_korean():
     print("[ok]   project.godot += ko 번역")
 
 
+OVERLAY_GD = r'''extends CanvasLayer
+# iOS 가상 패드: 메뉴/컷신처럼 AndroidControls 가 없는 화면에서 조작용으로 표시.
+# 게임 컨트롤러가 연결돼 있으면 자동으로 숨김.
+
+const MAP = {
+	"left": ["ui_left", "move_left"],
+	"right": ["ui_right", "move_right"],
+	"up": ["ui_up", "move_up"],
+	"down": ["ui_down", "move_down"],
+	"a": ["ui_accept", "jump"],
+	"b": ["ui_cancel", "fire"],
+	"start": ["pause"],
+}
+
+var canvas: Control
+var touches: Dictionary = {}
+var active: Dictionary = {}
+var pressed_names: Dictionary = {}
+var shown: bool = false
+var timer: float = 0.0
+
+
+func _ready() -> void:
+	layer = 100
+	pause_mode = Node.PAUSE_MODE_PROCESS
+	canvas = Control.new()
+	canvas.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(canvas)
+	canvas.set_anchors_and_margins_preset(Control.PRESET_WIDE)
+	canvas.connect("draw", self, "_on_draw")
+	set_shown(false)
+
+
+func _process(delta: float) -> void:
+	timer -= delta
+	if timer > 0.0:
+		return
+	timer = 0.4
+	var want_show = OS.get_name() == "iOS" and Input.get_connected_joypads().size() == 0 and get_tree().root.find_node("AndroidControls", true, false) == null
+	if want_show != shown:
+		set_shown(want_show)
+
+
+func set_shown(v: bool) -> void:
+	shown = v
+	canvas.visible = v
+	if not v:
+		touches.clear()
+		_apply()
+
+
+func _layout() -> Dictionary:
+	var s = get_viewport().get_visible_rect().size
+	var u = s.y / 224.0
+	return {
+		"dpad_c": Vector2(58.0 * u, s.y - 58.0 * u),
+		"dpad_r": 40.0 * u,
+		"a_c": Vector2(s.x - 36.0 * u, s.y - 62.0 * u),
+		"b_c": Vector2(s.x - 82.0 * u, s.y - 34.0 * u),
+		"btn_r": 20.0 * u,
+		"s_c": Vector2(s.x * 0.5, s.y - 16.0 * u),
+		"s_hw": 24.0 * u,
+		"s_hh": 10.0 * u,
+	}
+
+
+func _buttons_at(p: Vector2) -> Array:
+	var L = _layout()
+	var out = []
+	var d = p - L["dpad_c"]
+	if d.length() < L["dpad_r"] * 1.5:
+		var dead = L["dpad_r"] * 0.25
+		if d.x < -dead:
+			out.append("left")
+		elif d.x > dead:
+			out.append("right")
+		if d.y < -dead:
+			out.append("up")
+		elif d.y > dead:
+			out.append("down")
+	if p.distance_to(L["a_c"]) < L["btn_r"] * 1.3:
+		out.append("a")
+	if p.distance_to(L["b_c"]) < L["btn_r"] * 1.3:
+		out.append("b")
+	if abs(p.x - L["s_c"].x) < L["s_hw"] * 1.2 and abs(p.y - L["s_c"].y) < L["s_hh"] * 1.6:
+		out.append("start")
+	return out
+
+
+func _input(event: InputEvent) -> void:
+	if not shown:
+		return
+	if event is InputEventScreenTouch:
+		if event.pressed:
+			touches[event.index] = event.position
+		else:
+			touches.erase(event.index)
+		_apply()
+	elif event is InputEventScreenDrag:
+		touches[event.index] = event.position
+		_apply()
+
+
+func _apply() -> void:
+	var names = {}
+	for i in touches.keys():
+		for n in _buttons_at(touches[i]):
+			names[n] = true
+	var want = {}
+	for n in names.keys():
+		for a in MAP[n]:
+			want[a] = true
+	for a in active.keys():
+		if not want.has(a):
+			Input.action_release(a)
+			active.erase(a)
+	for a in want.keys():
+		if not active.has(a):
+			Input.action_press(a)
+			active[a] = true
+	pressed_names = names
+	if canvas:
+		canvas.update()
+
+
+func _on_draw() -> void:
+	if not shown:
+		return
+	var L = _layout()
+	var off = Color(1, 1, 1, 0.22)
+	var on = Color(1, 1, 1, 0.55)
+	var font = canvas.get_font("font", "Label")
+	canvas.draw_circle(L["dpad_c"], L["dpad_r"], Color(1, 1, 1, 0.10))
+	var r = L["dpad_r"] * 0.62
+	var dirs = {
+		"left": Vector2(-r, 0),
+		"right": Vector2(r, 0),
+		"up": Vector2(0, -r),
+		"down": Vector2(0, r),
+	}
+	for k in dirs.keys():
+		var c = on if pressed_names.has(k) else off
+		canvas.draw_circle(L["dpad_c"] + dirs[k], L["dpad_r"] * 0.26, c)
+	canvas.draw_circle(L["a_c"], L["btn_r"], on if pressed_names.has("a") else off)
+	canvas.draw_circle(L["b_c"], L["btn_r"], on if pressed_names.has("b") else off)
+	canvas.draw_string(font, L["a_c"] + Vector2(-4, 5), "A", Color(0, 0, 0, 0.8))
+	canvas.draw_string(font, L["b_c"] + Vector2(-4, 5), "B", Color(0, 0, 0, 0.8))
+	var sr = Rect2(L["s_c"] - Vector2(L["s_hw"], L["s_hh"]), Vector2(L["s_hw"] * 2.0, L["s_hh"] * 2.0))
+	canvas.draw_rect(sr, on if pressed_names.has("start") else off)
+	canvas.draw_string(font, L["s_c"] + Vector2(-14, 4), "START", Color(0, 0, 0, 0.8))
+'''
+
+
+def patch_overlay():
+    path = os.path.join("System", "IOSTouchOverlay.gd")
+    write(path, OVERLAY_GD)
+    print(f"[ok]   {path} (iOS 가상 패드)")
+    proj = read("project.godot")
+    if "IOSTouchOverlay=" in proj:
+        print("[skip] project.godot (IOSTouchOverlay 이미 등록됨)")
+        return
+    nl = "\r\n" if "\r\n" in proj else "\n"
+    m = re.search(r"^\[autoload\]\s*$", proj, re.M)
+    if not m:
+        sys.exit("[error] project.godot에 [autoload] 섹션이 없음")
+    line = 'IOSTouchOverlay="*res://System/IOSTouchOverlay.gd"'
+    proj = proj[: m.end()] + nl + line + proj[m.end():]
+    write("project.godot", proj)
+    print("[ok]   project.godot += IOSTouchOverlay autoload")
+
+
 if __name__ == "__main__":
     if not os.path.exists("project.godot"):
         sys.exit("[error] 저장소 루트(project.godot가 있는 곳)에서 실행하세요")
@@ -170,4 +341,5 @@ if __name__ == "__main__":
     patch_spawner()
     patch_project_godot()
     patch_presets()
+    patch_overlay()
     apply_korean()
