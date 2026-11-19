@@ -354,10 +354,22 @@ func _find_button_at(node: Node, p: Vector2):
 		var found = _find_button_at(kids[i], p)
 		if found != null:
 			return found
-	if node is TextureButton and node.has_method("on_press") and node.is_visible_in_tree() and not node.disabled and node.focus_mode != Control.FOCUS_NONE:
-		if _button_has_point(node, p):
-			return node
+	if node is TextureButton and node.has_method("on_press") and not node.disabled and node.focus_mode != Control.FOCUS_NONE:
+		if node.is_visible_in_tree() or _hidden_hit_area_ok(node):
+			if _button_has_point(node, p):
+				return node
 	return null
+
+
+# 캐릭터 선택 화면의 좌우 화살표 버튼은 씬에서 숨겨져(visible=false) 있어 터치를 못 받음.
+# 부모 화면이 보이는 동안에는 숨겨진 상태 그대로 터치 영역으로 사용한다.
+func _hidden_hit_area_ok(node: Node) -> bool:
+	if node.name != "next_player" and node.name != "prev_player":
+		return false
+	if node.get("direction") == null:
+		return false
+	var parent = node.get_parent()
+	return parent != null and parent is CanvasItem and parent.is_visible_in_tree()
 
 
 func _button_has_point(b, p: Vector2) -> bool:
@@ -400,8 +412,9 @@ func _end_tap(p: Vector2) -> void:
 	if is_instance_valid(b):
 		if b.is_connected("pressed", self, "_on_tap_probe"):
 			b.disconnect("pressed", self, "_on_tap_probe")
-		if inside and not fired and b.is_visible_in_tree() and b.focus_mode != Control.FOCUS_NONE:
-			b.grab_focus()
+		if inside and not fired and b.focus_mode != Control.FOCUS_NONE:
+			if b.is_visible_in_tree():
+				b.grab_focus()
 			b.emit_signal("pressed")
 	if tap_button == b:
 		tap_index = -1
