@@ -44,7 +44,12 @@ jobs:
         run: |
           set -eux
           # Godot iOS 내보내기는 1024 앱스토어 아이콘이 불투명(알파 없음)이어야 함
-          sips -s format jpeg -s formatOptions 100 -z 1024 1024 icon.png --out ci_icon_1024.jpg
+          # JPEG를 거치면 알파가 사라지므로 다시 PNG로 되돌려 불투명 PNG를 만든다
+          sips -s format jpeg -s formatOptions 100 -z 1024 1024 icon.png --out /tmp/icon_opaque.jpg
+          sips -s format png /tmp/icon_opaque.jpg --out ci_icon_1024.png
+          # 프리셋에 아이콘 값이 적용되지 않는 경우를 대비해 프로젝트 기본 아이콘도 불투명으로 교체
+          cp ci_icon_1024.png icon.png
+          sips -g hasAlpha -g pixelWidth -g pixelHeight icon.png ci_icon_1024.png
           # 내보내기 결과물이 프로젝트 리소스로 임포트되지 않게 제외
           mkdir -p build/ios
           touch build/.gdignore
