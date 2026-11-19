@@ -107,8 +107,8 @@ application/app_store_team_id="{team}"
 application/identifier="{bundle}"
 application/bundle_identifier="{bundle}"
 icons/app_store_1024x1024="res://ci_icon_1024.png"
-application/short_version="1.1"
-application/version="1.1"
+application/short_version="1.2"
+application/version="1.2"
 application/launch_screens_interpolation=0
 application/targeted_device_family=2
 orientation/portrait=false
@@ -169,11 +169,12 @@ OVERLAY_GD = r'''extends CanvasLayer
 # - 캐릭터를 고른 뒤 스테이지(플레이어가 있을 때)에서만 표시, 메뉴에서는 화면을 직접 터치
 # - 블루투스 컨트롤러가 연결되어 있으면 자동으로 숨김
 
-const STICK_DEADZONE = 0.14
-const STICK_ACTIVATION_RADIUS = 0.48
+const STICK_DEADZONE = 0.10
+const STICK_ACTIVATION_RADIUS = 0.40
 const STICK_DPAD_RING_RADIUS = 0.32
 const WIDE_SCREEN_SAFE_MARGIN = 0.055
-const DIGITAL_THRESHOLD = 0.35
+const DIGITAL_THRESHOLD = 0.25
+const HIT_GROW = 1.5  # 버튼 터치 판정 배율 (그려진 크기 대비)
 
 var stick_frame = Rect2(0.055, 0.560, 0.190, 0.315)
 
@@ -207,6 +208,9 @@ var timer: float = 0.0
 var tap_index: int = -1
 var tap_button = null
 var tap_fired: bool = false
+var press_pf: Dictionary = {}      # 액션별 눌린 시점의 물리 프레임
+var press_if: Dictionary = {}      # 액션별 눌린 시점의 idle 프레임
+var pending_release: Dictionary = {}  # 게임이 한 번도 못 본 채 떼어진 액션 (보류)
 
 
 func _ready() -> void:
@@ -234,7 +238,12 @@ func _in_stage() -> bool:
 	return false
 
 
+func _physics_process(_delta: float) -> void:
+	_flush_releases()
+
+
 func _process(delta: float) -> void:
+	_flush_releases()
 	timer -= delta
 	if timer > 0.0:
 		return
@@ -277,12 +286,28 @@ func _pill_contains(r: Rect2, p: Vector2, grow: float) -> bool:
 
 
 func _find_control(p: Vector2) -> String:
-	if _to_window(stick_frame).has_point(p):
-		return "stick"
+	var best = ""
+	var best_d = 1.0e20
 	for b in buttons:
-		if _pill_contains(_to_window(b[2]), p, 1.15):
-			return b[0]
+		var r = _to_window(b[2])
+		if _pill_contains(r, p, HIT_GROW):
+			var d = p.distance_squared_to(r.position + r.size * 0.5)
+			if d < best_d:
+				best_d = d
+				best = b[0]
+	if best != "":
+		return best
+	if _stick_area_has(p):
+		return "stick"
 	return ""
+
+
+# 플로팅 스틱 영역: 화면 왼쪽 절반(검은 여백 포함). 일시정지 메뉴 중에는 기존 고정 위치만 사용
+func _stick_area_has(p: Vector2) -> bool:
+	if get_tree().paused:
+		return _to_window(stick_frame).has_point(p)
+	var s = get_viewport().get_visible_rect().size
+	return p.x < s.x * 0.5 and p.y > s.y * 0.15
 
 
 func _stick_zone(sf: Rect2, p: Vector2) -> String:
@@ -332,7 +357,7 @@ func _input(event: InputEvent) -> void:
 				return
 			var cap = {"control": id, "zone": "", "anchor": p, "current": p}
 			if id == "stick":
-				cap["zone"] = _stick_zone(_to_window(stick_frame), p)
+				cap["zone"] = "stick"
 			captures[event.index] = cap
 		else:
 			if event.index == tap_index:
@@ -341,7 +366,14 @@ func _input(event: InputEvent) -> void:
 		_apply()
 	elif event is InputEventScreenDrag:
 		if captures.has(event.index):
-			captures[event.index]["current"] = event.position
+			var cp = captures[event.index]
+			cp["current"] = event.position
+			if cp["control"] == "stick":
+				var sfw = _to_window(stick_frame)
+				var outer = min(sfw.size.x, sfw.size.y) * STICK_ACTIVATION_RADIUS
+				var dd = cp["current"] - cp["anchor"]
+				if dd.length() > outer:
+					cp["anchor"] = cp["current"] - dd.normalized() * outer
 			_apply()
 
 
@@ -465,6 +497,37 @@ func _apply() -> void:
 # Pause.gd 등은 event.is_action_pressed() 를 쓰므로 InputEventAction 을 직접 주입한다.
 # (parse_input_event 는 액션 상태도 같이 갱신하므로 폴링 방식 코드도 그대로 동작)
 func _send_action(a: String, pressed: bool) -> void:
+	if pressed:
+		if pending_release.has(a):
+			pending_release.erase(a)
+			_inject(a, false)
+		press_pf[a] = Engine.get_physics_frames()
+		press_if[a] = Engine.get_idle_frames()
+		_inject(a, true)
+	else:
+		if _seen_by_game(a):
+			_inject(a, false)
+		else:
+			pending_release[a] = true
+
+
+# 눌린 뒤 물리 프레임과 idle 프레임이 각각 한 번 이상 지났는지 (is_action_just_pressed 가 true 를 볼 기회가 있었는지)
+func _seen_by_game(a: String) -> bool:
+	if not press_pf.has(a):
+		return true
+	return Engine.get_physics_frames() > press_pf[a] and Engine.get_idle_frames() > press_if[a]
+
+
+func _flush_releases() -> void:
+	if pending_release.empty():
+		return
+	for a in pending_release.keys():
+		if _seen_by_game(a):
+			pending_release.erase(a)
+			_inject(a, false)
+
+
+func _inject(a: String, pressed: bool) -> void:
 	var ev = InputEventAction.new()
 	ev.action = a
 	ev.pressed = pressed
@@ -528,6 +591,9 @@ func _on_draw() -> void:
 	var bw = 0.6
 	var sf = _to_window(stick_frame)
 	var c = sf.position + sf.size * 0.5
+	for i0 in captures.keys():
+		if captures[i0]["control"] == "stick":
+			c = captures[i0]["anchor"]
 	var base_size = min(sf.size.x, sf.size.y)
 	var radius = base_size * 0.5
 	var ring = base_size * STICK_DPAD_RING_RADIUS
@@ -539,10 +605,16 @@ func _on_draw() -> void:
 	for i in captures.keys():
 		var cap = captures[i]
 		if cap["control"] == "stick":
-			if cap["zone"] == "stick":
-				knob = c + _stick_delta(sf, cap)
-			elif cap["zone"] != "":
-				pressed_zones[cap["zone"]] = true
+			knob = c + _stick_delta(sf, cap)
+			var sv = _stick_vector(sf, cap)
+			if sv.x < -DIGITAL_THRESHOLD:
+				pressed_zones["left"] = true
+			elif sv.x > DIGITAL_THRESHOLD:
+				pressed_zones["right"] = true
+			if sv.y < -DIGITAL_THRESHOLD:
+				pressed_zones["up"] = true
+			elif sv.y > DIGITAL_THRESHOLD:
+				pressed_zones["down"] = true
 	var arrow_dist = (radius + ring) * 0.5
 	var arrow_size = (radius - ring) * 0.3
 	var dirs = {"up": Vector2(0, -1), "down": Vector2(0, 1), "left": Vector2(-1, 0), "right": Vector2(1, 0)}
